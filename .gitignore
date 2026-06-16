@@ -35,3 +35,7 @@
 # CMake directories
 src/
 tmp/
+
+# Test binaries and scratch files
+test/*_bin
+test/test_wzio.tmp
