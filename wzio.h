@@ -62,8 +62,13 @@ static inline int gzFile_read_line(gzFile fh, char **s) {
     exit(1);
   }
   
-  /* reset s */
-  int m = 10, l = 0;            /* memory and string length */
+  /* Establish a known floor for the buffer on every call. Starting from a
+   * reasonable size (rather than 10) means typical lines never trigger the
+   * geometric growth below, and re-requesting the same size on each call is a
+   * cheap no-op in the allocator once the buffer has reached it -- so a buffer
+   * reused across many calls (e.g. reading every record of a VCF) is allocated
+   * once and grown only for the occasional over-long line. */
+  int m = 4096, l = 0;          /* memory and string length */
   *s = realloc(*s, m);
 
   /* read until '\n' or EOF */
@@ -75,6 +80,72 @@ static inline int gzFile_read_line(gzFile fh, char **s) {
     (*s)[l++] = c;
   }
   return 0;                     /* should not come here */
+}
+
+/*****************************************
+ ** Buffered line reader                **
+ *****************************************
+ * gzFile_read_line() above reads one byte at a time via gzgetc(), which is a
+ * large cost when scanning big files line by line. This reader pulls the
+ * stream in large blocks (via gzread) and splits lines in memory with memchr,
+ * eliminating the per-byte overhead.
+ *
+ * It is line-compatible with gzFile_read_line(): gzbuf_read_line() returns 1
+ * for each '\n'-terminated line (the '\n' is stripped, the result is
+ * NUL-terminated) and 0 once the stream is exhausted. A trailing line without
+ * a newline is not returned (return 0), matching gzFile_read_line(). */
+
+#define GZBUF_READER_CAP (1 << 20)    /* 1 MiB read block */
+
+typedef struct gzbuf_reader_t {
+  gzFile fh;
+  unsigned char *buf;           /* read block */
+  int beg, end;                 /* valid bytes live in buf[beg, end) */
+  int eof;                      /* stream exhausted */
+} gzbuf_reader_t;
+
+static inline void gzbuf_init(gzbuf_reader_t *r, gzFile fh) {
+  r->fh = fh;
+  r->buf = malloc(GZBUF_READER_CAP);
+  r->beg = r->end = 0;
+  r->eof = 0;
+}
+
+static inline void gzbuf_free(gzbuf_reader_t *r) {
+  free(r->buf);
+  r->buf = NULL;
+}
+
+/* Read one line into *s (capacity tracked in *cap, grown as needed and reused
+ * across calls). Returns 1 on a line, 0 at end of stream. */
+static inline int gzbuf_read_line(gzbuf_reader_t *r, char **s, size_t *cap) {
+  size_t l = 0;
+  if (*cap < 1) { *cap = 4096; *s = realloc(*s, *cap); }
+  while (1) {
+    if (r->beg >= r->end) {     /* block consumed: refill */
+      if (r->eof) { (*s)[l] = '\0'; return 0; }
+      int n = gzread(r->fh, r->buf, GZBUF_READER_CAP);
+      if (n <= 0) { r->eof = 1; (*s)[l] = '\0'; return 0; }
+      r->beg = 0; r->end = n;
+    }
+    unsigned char *win = r->buf + r->beg;
+    int avail = r->end - r->beg;
+    unsigned char *nl = memchr(win, '\n', avail);
+    size_t chunk = nl ? (size_t)(nl - win) : (size_t)avail;
+    if (l + chunk + 1 > *cap) {
+      while (l + chunk + 1 > *cap) *cap <<= 1;
+      *s = realloc(*s, *cap);
+    }
+    memcpy(*s + l, win, chunk);
+    l += chunk;
+    r->beg += chunk;
+    if (nl) {                   /* found end of line */
+      r->beg++;                 /* skip the '\n' */
+      (*s)[l] = '\0';
+      return 1;
+    }
+    /* no newline in this block: keep accumulating across refills */
+  }
 }
 
 /****************************

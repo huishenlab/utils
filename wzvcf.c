@@ -170,6 +170,10 @@ vcf_file_t *init_vcf_file(char *vcf_file_path) {
       break;
     }
   }
+  /* Header lines are read above with gzFile_read_line (gzgetc), which does not
+   * read past the '\n'; the stream is positioned at the first record, so the
+   * buffered reader can take over for the (numerous) record lines. */
+  gzbuf_init(&vcf->reader, vcf->fh);
   return vcf;
 }
 
@@ -177,6 +181,7 @@ void free_vcf_file(vcf_file_t *vcf) {
   destroy_target_v(vcf->targets);
   free_char_array(vcf->samples, vcf->nsamples);
   free(vcf->file_path);
+  gzbuf_free(&vcf->reader);
   gzclose(vcf->fh);
   free(vcf->line);
   free(vcf->tsample_indices);
@@ -185,8 +190,7 @@ void free_vcf_file(vcf_file_t *vcf) {
 
 int vcf_read_line(vcf_file_t *vcf) {
   if (vcf->fh == NULL) return 0;
-  if (gzFile_read_line(vcf->fh, &vcf->line)) return 1;
-  return 0;
+  return gzbuf_read_line(&vcf->reader, &vcf->line, &vcf->line_cap);
 }
 
 void index_vcf_samples(vcf_file_t *vcf, char *sample_str) {

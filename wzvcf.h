@@ -101,7 +101,9 @@ typedef struct vcf_file_t {
   char **samples;
   char *file_path;
   gzFile fh;
+  gzbuf_reader_t reader;        /* buffered (block) reader for record lines */
   char *line;                   /* current line */
+  size_t line_cap;              /* allocated capacity of line */
   /* target samples, selected by index_vcf_samples */
   int *tsample_indices;         /* indices in *samples */
   int n_tsamples;
